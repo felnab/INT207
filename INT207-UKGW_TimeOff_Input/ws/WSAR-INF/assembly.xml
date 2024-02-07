@@ -1,0 +1,300 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<beans
+     xmlns="http://www.springframework.org/schema/beans"
+     xmlns:beans="http://www.springframework.org/schema/beans"
+     xmlns:atom="http://www.w3.org/2005/Atom"
+     xmlns:cc="http://www.capeclear.com/assembly/10"
+     xmlns:cloud="urn:com.workday/esb/cloud/10.0"
+     xmlns:env="http://schemas.xmlsoap.org/soap/envelope/"
+     xmlns:ns0="http://Microsoft.LobServices.OracleDB/2007/03/SYSADM/Table/PS_GEX_SMTRK_IN"
+     xmlns:pi="urn:com.workday/picof"
+     xmlns:wd="urn:com.workday/bsvc"
+     xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
+ 
+	<cc:assembly id="WorkdayAssembly" version="2018.35">
+        <cc:workday-in id="StartHere" routes-to="LogFile">
+            <cc:integration-system name="INT207_Time_Off_from_UKGW_to_Workday_Inbound">
+        <cloud:retrieval-service name="INT207 File Retrieval"/>
+        <cloud:report-service name="INT207RAAS">
+          <cloud:report-alias description="time off adjustment" name="TimeOffAdj">
+            <cloud:report-reference description="INT134JDA_TIME_OFF_ADJ" type="WID">15a8cc2817f601bdd3243d97580eaffc</cloud:report-reference>
+          </cloud:report-alias>
+        </cloud:report-service>
+      </cc:integration-system>
+        </cc:workday-in>
+        <cc:sync-mediation id="LogFile" routes-to="ReadFiles" handle-downstream-errors="true" routes-response-to="Done">
+            <cc:request-steps>
+                <cc:eval id="LogFile">
+                    <cc:expression>props['status-log'] = new java.lang.StringBuilder();</cc:expression>
+                    <cc:expression>props['status-log'].append('BatchID,EmployeeID, Action,Type, Date, Hours,Earn CD,  Note' + '\n')</cc:expression>
+                    <cc:expression>props['fail-count']=0</cc:expression>
+                    <cc:expression>props['Pass']=0</cc:expression>
+                    <cc:expression>props['ref']=0</cc:expression>
+                </cc:eval>
+            </cc:request-steps>
+            <cc:response-steps>
+                <cc:store id="Store" output="message" createDocumentReference="true" expiresIn="P90D" title="log.csv"/>
+                <cc:write id="Write">
+                    <cc:message>
+                        <cc:text>@{props['status-log'].toString()}</cc:text>
+                    </cc:message>
+                </cc:write>
+            </cc:response-steps>
+        </cc:sync-mediation>
+        <cc:local-out id="Done" routes-response-to="Errors" endpoint="vm://wcc/PutIntegrationMessage">
+            <cc:set name="is.message.severity" value="'INFO'"/>
+            <cc:set name="is.message.summary" value="'integration done'"/>
+            <cc:set name="is.message.storage.enabled" value="false"/>
+        </cc:local-out>
+        <cc:local-out id="Errors" execute-when="props['fail-count'] > 0" endpoint="vm://wcc/PutIntegrationMessage">
+            <cc:set name="is.message.severity" value="'ERRORS'"/>
+            <cc:set name="is.message.summary" value="props['fail-count'] + 'errors. Check log for details'"/>
+            <cc:set name="is.message.storage.enabled" value="false"/>
+        </cc:local-out>
+        <cc:route id="ReadFiles">
+            <cc:doc-iterator variable-name="Kronos_IN"/>
+            <cc:sub-route name="SubRoute" routes-to="TransformData"/>
+        </cc:route>
+        <cc:async-mediation id="LogError1">
+            <cc:steps>
+                <cc:eval id="ErrorFile1">
+                    <cc:expression>props['status-log'].append(props['StoreNum']+',N/A, Transform,Error,NA,NA,NA' + ',file does not have absence data\n')</cc:expression>
+                    <cc:expression>props['fail-count'] = props['fail-count']+1</cc:expression>
+                </cc:eval>
+            </cc:steps>
+        </cc:async-mediation>
+        <cc:async-mediation id="TransformData" routes-to="TransformedData" handle-downstream-errors="true">
+            <cc:steps>
+                <cc:write id="Write" input="variable" input-variable="Kronos_IN">
+                    <cc:message>
+                        <cc:message-content/>
+                    </cc:message>
+                </cc:write>
+                <cc:eval id="Eval">
+                    <cc:expression>props['StoreNum']=parts[0].xpath('(//ns0:Insert/ns0:RECORDSET/ns0:PS_GEX_SMTRK_INRECORDINSERT/ns0:DEPTID_HOME)[1]')</cc:expression>
+                </cc:eval>
+                <cc:xslt id="Xslt" url="KronosAbsIn.xsl"/>
+                <cc:log id="Log">
+                    <cc:log-message>
+                        <cc:message-content/>
+                    </cc:log-message>
+                </cc:log>
+                <cc:xslt id="Xslt0" url="GroupHours.xsl"/>
+            </cc:steps>
+            <cc:send-error id="SendError" routes-to="LogError1"/>
+        </cc:async-mediation>
+        <cc:local-out id="TransformedData" store-message="none" endpoint="vm://INT207-UKGW_TimeOff_Input/LoopData"/>
+        <cc:local-in id="LoopData" routes-to="Splitter"/>
+        <cc:splitter id="Splitter">
+            <cc:sub-route name="SubRoute" routes-to="Evaluation"/>
+            <cc:xml-stream-splitter xpath="ABSINP/Abs/"/>
+        </cc:splitter>
+        <cc:async-mediation id="Evaluation" routes-to="CallSubRoutine" handle-downstream-errors="true">
+            <cc:steps>
+                <cc:eval id="File_Eval">
+                    <cc:expression>props['ECD'] =parts[0].xpath('/Abs/erncd')</cc:expression>
+                    <cc:expression>props['EmpID'] =parts[0].xpath('/Abs/emp')</cc:expression>
+                    <cc:expression>props['RegHrs'] =parts[0].xpath('/Abs/Hours')</cc:expression>
+                    <cc:expression>props['PayEndDt'] =parts[0].xpath('/Abs/PayEndDate')</cc:expression>
+                    <cc:expression>props['ref']=props['ref'] +1</cc:expression>
+                    <cc:expression>props['BatchID'] =parts[0].xpath('/Abs/Batch_ID') # props['ref'] # 'T'</cc:expression>
+                   <cc:expression>props['Action'] =parts[0].xpath('/Abs/action')</cc:expression>
+                </cc:eval>
+            </cc:steps>
+            <cc:send-error id="SendError" routes-to="LogError2"/>
+            <!--  <cc:send-error id="SendError"/>-->
+        </cc:async-mediation>
+        <cc:async-mediation id="LogError2">
+            <cc:steps>
+                <cc:eval id="ErrorFile2">
+                    <cc:expression>props['status-log'].append(props['BatchID']+','+ props['EmpID'] + ', Vars, Error,NA,NA,NA'+ ','+ context.errorMessage   + '\n')</cc:expression>
+                    <cc:expression>props['fail-count'] = props['fail-count']+1</cc:expression>
+                </cc:eval>
+            </cc:steps>
+        </cc:async-mediation>
+        <cc:local-out id="CallSubRoutine" store-message="none" endpoint="vm://INT207-UKGW_TimeOff_Input/CallWS"/>
+        <cc:local-in id="CallWS" routes-to="Route"/>
+        <cc:async-mediation id="WritePWS" routes-to="WorkdayOutSoap" handle-downstream-errors="true">
+            <cc:steps>
+                <cc:write id="Write">
+                    <cc:message>
+                        <cc:text>&lt;?xml version=&quot;1.0&quot; encoding=&quot;UTF-8&quot;?>&#xD;
+&lt;env:Envelope&#xD;
+    xmlns:env=&quot;http://schemas.xmlsoap.org/soap/envelope/&quot;&#xD;
+    xmlns:xsd=&quot;http://www.w3.org/2001/XMLSchema&quot;>&#xD;
+    &lt;env:Body>&#xD;
+        &lt;wd:Enter_Time_Off_Request xmlns:wd=&quot;urn:com.workday/bsvc&quot; wd:version=&quot;v30.1&quot;>&#xD;
+            &lt;wd:Business_Process_Parameters>&#xD;
+                &lt;wd:Auto_Complete>false&lt;/wd:Auto_Complete>&#xD;
+                &lt;wd:Run_Now>false&lt;/wd:Run_Now>&#xD;
+        &#xD;
+            &lt;/wd:Business_Process_Parameters>&#xD;
+            &lt;wd:Enter_Time_Off_Data>&#xD;
+                &lt;wd:Turn_Off_Run_Time_Calculations_with_Time_Off_Approval>true&lt;/wd:Turn_Off_Run_Time_Calculations_with_Time_Off_Approval>&#xD;
+     		&#xD;
+				&lt;wd:Worker_Reference>&#xD;
+          &lt;wd:ID wd:type=&quot;Employee_ID&quot;>@{util.cleanString( props[&quot;EmpID&quot;])}&lt;/wd:ID>&#xD;
+                &lt;/wd:Worker_Reference>&#xD;
+                &lt;wd:Enter_Time_Off_Entry_Data>&#xD;
+                    &lt;wd:Time_Off_Entry_ID>@{util.cleanString( props[&quot;BatchID&quot;])}&lt;/wd:Time_Off_Entry_ID>&#xD;
+                    &lt;wd:Date>@{util.cleanString( props[&quot;PayEndDt&quot;])}&lt;/wd:Date>&#xD;
+                    &lt;wd:Requested>@{util.cleanString( props[&quot;RegHrs&quot;])}&lt;/wd:Requested>&#xD;
+                    &lt;wd:Time_Off_Type_Reference>&#xD;
+                        &lt;wd:ID wd:type=&quot;Time_Off_Type_ID&quot;>@{util.cleanString( props[&quot;Action&quot;])}&lt;/wd:ID>&#xD;
+                    &lt;/wd:Time_Off_Type_Reference>&#xD;
+            &#xD;
+                &lt;/wd:Enter_Time_Off_Entry_Data>&#xD;
+            &lt;/wd:Enter_Time_Off_Data>&#xD;
+        &lt;/wd:Enter_Time_Off_Request>&#xD;
+    &lt;/env:Body>&#xD;
+&lt;/env:Envelope>&#xD;
+&#xD;
+&#xD;
+&#xD;
+</cc:text>
+                    </cc:message>
+                </cc:write>
+                <cc:log id="Log">
+                    <cc:log-message>
+                        <cc:message-content/>
+                    </cc:log-message>
+                </cc:log>
+            </cc:steps>
+            <cc:send-error id="SendError" routes-to="LogError3"/>
+        </cc:async-mediation>
+        <cc:async-mediation id="LogError3">
+            <cc:steps>
+                <cc:eval id="ErrorFile3">
+                    <cc:expression>props['status-log'].append(props['BatchID']+','+props['EmpID'] + ', Web service, Error'+ ',' +props['PayEndDt']+','+props['RegHrs']+',' +props['ECD']+','+ context.errorMessage   + '\n')</cc:expression>
+                    <cc:expression>props['fail-count'] = props['fail-count']+1</cc:expression>
+                </cc:eval>
+            </cc:steps>
+        </cc:async-mediation>
+        <cc:workday-out-soap id="WorkdayOutSoap" routes-response-to="LogSuccess" application="Absence_Management" version="v32.2"/>
+        <cc:send-error id="global-error-handler" rethrow-error="false" routes-to="AsyncMediation5"/>
+        <cc:local-out id="Note-Error" endpoint="vm://wcc/PutIntegrationMessage">
+            <cc:set name="is.message.severity" value="'CRITICAL'"/>
+            <cc:set name="is.message.summary" value="context.errorMessage"/>
+        </cc:local-out>
+        <cc:async-mediation id="LogSuccess">
+            <cc:steps>
+                <cc:eval id="Success">
+                    <cc:expression>props['status-log'].append(props['BatchID']+','+props['EmpID'] + ', Web service, success'+ ',' +'\n')</cc:expression>
+                    <cc:expression>props['Pass'] = props['Pass']+1</cc:expression>
+                </cc:eval>
+            </cc:steps>
+        </cc:async-mediation>
+        <cc:route id="Route">
+            <cc:mvel-strategy>
+                <cc:choose-route expression="props['RegHrs']>=0" route="PositiveHrs"/>
+                <cc:choose-route expression="true" route="NegativeHrs"/>
+            </cc:mvel-strategy>
+            <cc:sub-route name="PositiveHrs" routes-to="WritePWS"/>
+            <cc:sub-route name="NegativeHrs" routes-to="AsyncMediation1"/>
+        </cc:route>
+        <cc:async-mediation id="WriteNWS" routes-to="WorkdayOutSoap" handle-downstream-errors="true">
+            <cc:steps>
+                <cc:write id="Write">
+                    <cc:message>
+                        <cc:text>&lt;?xml version=&quot;1.0&quot; encoding=&quot;UTF-8&quot;?>&#xD;
+&lt;env:Envelope&#xD;
+    xmlns:env=&quot;http://schemas.xmlsoap.org/soap/envelope/&quot;&#xD;
+    xmlns:xsd=&quot;http://www.w3.org/2001/XMLSchema&quot;>&#xD;
+    &lt;env:Body>&#xD;
+        &lt;wd:Adjust_Time_Off_Request xmlns:wd=&quot;urn:com.workday/bsvc&quot; wd:version=&quot;v31.2&quot;>&#xD;
+            &lt;wd:Business_Process_Parameters>&#xD;
+                &lt;wd:Auto_Complete>true&lt;/wd:Auto_Complete>&#xD;
+                &lt;wd:Run_Now>true&lt;/wd:Run_Now>&#xD;
+         &#xD;
+               &#xD;
+            &lt;/wd:Business_Process_Parameters>&#xD;
+            &lt;wd:Adjust_Time_Off_Data>&#xD;
+                &lt;wd:Run_Time_Off_Validations>true&lt;/wd:Run_Time_Off_Validations>&#xD;
+                &lt;wd:Worker_Reference>&#xD;
+                    &lt;wd:ID wd:type=&quot;Employee_ID&quot;>@{util.cleanString( props[&quot;EmpID&quot;])}&lt;/wd:ID>&#xD;
+                &lt;/wd:Worker_Reference>&#xD;
+                &lt;wd:Adjust_Time_Off_Entry_Data>&#xD;
+                  &lt;!--  &lt;wd:Time_Off_Entry_ID>abcdef&lt;/wd:Time_Off_Entry_ID>-->&#xD;
+                    &lt;wd:Time_Off_Entry_Reference>&#xD;
+                        &lt;wd:ID wd:type=&quot;Time_Off_Entry_ID&quot;>@{util.cleanString( props[&quot;TimeOffAdjRefID&quot;])}&lt;/wd:ID>&#xD;
+                    &lt;/wd:Time_Off_Entry_Reference>&#xD;
+                    &lt;wd:Adjustment_to_Requested>@{util.cleanString(props[&quot;RegHrs&quot;])}&lt;/wd:Adjustment_to_Requested>&#xD;
+              &#xD;
+                &lt;/wd:Adjust_Time_Off_Entry_Data>&#xD;
+            &lt;/wd:Adjust_Time_Off_Data>&#xD;
+        &lt;/wd:Adjust_Time_Off_Request>&#xD;
+    &lt;/env:Body>&#xD;
+&lt;/env:Envelope></cc:text>
+                    </cc:message>
+                </cc:write>
+                <cc:log id="Log">
+                    <cc:log-message>
+                        <cc:message-content/>
+                    </cc:log-message>
+                </cc:log>
+            </cc:steps>
+            <cc:send-error id="SendError" routes-to="LogError4"/>
+        </cc:async-mediation>
+        <cc:async-mediation id="LogError4">
+            <cc:steps>
+                <cc:eval id="ErrorFile4">
+                    <cc:expression>props['status-log'].append(props['BatchID']+','+props['EmpID'] + ',  Adj Web service, Error'+ ',' +props['PayEndDt']+','+props['RegHrs']+',' +props['ECD']+','+ context.errorMessage   + '\n')</cc:expression>
+                    <cc:expression>props['fail-count'] = props['fail-count']+1</cc:expression>
+                </cc:eval>
+            </cc:steps>
+        </cc:async-mediation>
+        <cc:workday-out-rest id="WorkdayOutRest" store-message="none" routes-response-to="AsyncMediation" extra-path="@{intsys.reportService.getExtrapath('TimeOffAdj')}?Organizations!WID=@{props['WDWID']}&amp;Include_Managers=1&amp;End_Date=@{props['Edate']}&amp;Start_Date=@{props['Sdate']}&amp;Include_Subordinate_Organizations=1&amp;CF_LRV_TIme_Off_Entry_Worker_ID=@{props['EmpID']}&amp;format=simplexml" method="GET"/>
+        <cc:async-mediation id="AsyncMediation" routes-to="WriteNWS" handle-downstream-errors="true">
+            <cc:steps>
+                <cc:eval id="Eval">
+                    <cc:expression>props['TimeOffAdjRefID2']= &quot;//wd:Report_Data/wd:Report_Entry[wd:Team_Member_ID ='&quot;#props['EmpID']#&quot;' and wd:Type ='&quot;#props['Action']#&quot;' and wd:date='&quot;#props['PayEndDt'] #&quot;']/wd:referenceID&quot;</cc:expression>
+                    <cc:expression>props['TimeOffAdjRefID']=parts[0].xpath(props['TimeOffAdjRefID2'])</cc:expression>
+                </cc:eval>
+                <cc:log id="Log">
+                    <cc:log-message>
+                        <cc:message-content/>
+                        <cc:text>props['TimeOffAdjRefID'] = @{props['TimeOffAdjRefID']}&#xD;
+props['wddate']=@{props['wddate']}&#xD;
+props['TimeOffAdjRefID2']=@{props['TimeOffAdjRefID2']}&#xD;
+dateformat =@{props['Sdate']}&#xD;
+props['Edate']=@{props['Edate']}</cc:text>
+                    </cc:log-message>
+                </cc:log>
+                <cc:validate-exp id="ValidateExp">
+                    <cc:expression failure-message="Ref ID not found ">props['TimeOffAdjRefID'].length()>0</cc:expression>
+                </cc:validate-exp>
+            </cc:steps>
+            <cc:send-error id="SendError" routes-to="AsyncMediation0"/>
+        </cc:async-mediation>
+        <cc:async-mediation id="AsyncMediation0">
+            <cc:steps>
+                <cc:eval id="ErrorFile5">
+                    <cc:expression>props['status-log'].append(props['BatchID']+','+props['EmpID'] + ',  Adj Web service, Error'+ ',' +props['PayEndDt']+','+props['RegHrs']+',' +props['ECD']+','+ context.errorMessage   + '\n')</cc:expression>
+                    <cc:expression>props['fail-count'] = props['fail-count']+1</cc:expression>
+                </cc:eval>
+            </cc:steps>
+        </cc:async-mediation>
+        <cc:async-mediation id="AsyncMediation1" routes-to="WorkdayOutRest">
+            <cc:steps>
+                <cc:eval id="Eval">
+                    <cc:expression>props['wddate']= util.currentDateTimeAsString()</cc:expression>
+                    <cc:expression>props['Fdate']=props['wddate'].substring(0,10)</cc:expression>
+                    <cc:expression>props['Edate']= props['Fdate']#&quot;-08:00&quot;</cc:expression>
+                    <cc:expression>props['Sdate'] = parts[0].xpath(&quot;xs:date('&quot;+props['Fdate']+&quot;') - xs:dayTimeDuration('P60D')&quot;)#&quot;-08:00&quot;</cc:expression>
+                    <cc:expression>props['WDWID']='7d439d5d13c20182ef8496f44e0888b4'</cc:expression>
+                </cc:eval>
+            </cc:steps>
+        </cc:async-mediation>
+        <cc:async-mediation id="AsyncMediation5" routes-to="Note-Error">
+            <cc:steps>
+                <cc:write id="Write">
+                    <cc:message>
+                        <cc:text>@{props['status-log'].toString()}</cc:text>
+                    </cc:message>
+                </cc:write>
+                <cc:store id="Store" output="message" createDocumentReference="true" expiresIn="P90D" title="log.csv"/>
+            </cc:steps>
+        </cc:async-mediation>
+	</cc:assembly>
+
+</beans>
